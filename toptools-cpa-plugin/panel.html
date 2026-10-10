@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Top Tools AI</title>
+<style>
+:root{--bg:#faf9f5;--card:#fff;--border:#e3e1db;--fg:#2d2a26;--mut:#6d6760;--acc:#4c8dff;--ok:#10b981;--err:#c65746;--surface:#f0eee8;--btn-sec:#eef1f6}
+:root[data-theme="dark"]{--bg:#1e1d1b;--card:#26241f;--border:#3a3833;--fg:#ede9e3;--mut:#9a948c;--surface:#2f2d28;--btn-sec:#35332e}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.5 system-ui,sans-serif}
+.wrap{max-width:960px;margin:0 auto;padding:24px 16px}
+h1{font-size:20px;margin:0 0 4px}.sub{color:var(--mut);font-size:13px;margin-bottom:16px}
+.bar{display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap}
+button{background:var(--acc);color:#fff;border:0;border-radius:8px;padding:8px 14px;cursor:pointer}
+button.sec{background:var(--btn-sec);color:var(--fg)}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px}
+.card{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:14px}
+.uid{color:var(--mut);font:11px ui-monospace,monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.badge{font-size:11px;font-weight:600;padding:3px 10px;border-radius:99px}
+.ok{color:var(--ok)}.dead{color:var(--err)}.cool{color:#d97706}
+.field-input,textarea{width:100%;background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:8px;color:var(--fg)}
+textarea{min-height:100px;font-family:ui-monospace,monospace}
+.modal-mask{display:none;position:fixed;inset:0;background:rgba(0,0,0,.35);align-items:center;justify-content:center}
+.modal-mask.show{display:flex}.modal{background:var(--card);border-radius:16px;padding:16px;width:min(480px,92vw)}
+.loading{color:var(--mut);padding:24px;text-align:center}
+.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:10px 0}
+.stat{background:var(--surface);border-radius:10px;padding:8px 10px}
+.stat .k{font-size:11px;color:var(--mut)}
+.stat .v{font-size:18px;font-weight:700}
+.track{height:6px;background:var(--surface);border:1px solid var(--border);border-radius:99px;overflow:hidden;margin-top:4px}
+.fill{display:block;height:100%;background:var(--ok)}
+.owned{margin-top:8px;font-size:12px}
+.owned div{padding:6px 0;border-bottom:1px solid var(--border)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Top Tools AI</h1>
+  <div class="sub"><a href="https://top-tools-ai.com/dashboard" target="_blank">dashboard</a> Usage &amp; plan</div>
+  <div id="authBox" class="card" style="display:none;margin-bottom:12px">
+    <div class="sub">需要 CPA management key</div>
+    <div class="bar"><input id="keyInput" type="password" class="field-input" placeholder="management key"><button onclick="saveKey()">连接</button></div>
+  </div>
+  <div class="bar"><button class="sec" onclick="openImport()">导入 sk-</button><button id="refreshBtn" onclick="load()">刷新</button></div>
+  <div id="grid" class="grid"><div class="loading">加载中…</div></div>
+</div>
+<div class="modal-mask" id="importModal" onclick="if(event.target===this)closeImport()">
+  <div class="modal">
+    <h2>导入 API key</h2>
+    <p class="sub">粘贴 <code>sk-…</code> 或 JSON</p>
+    <textarea id="importRaw"></textarea>
+    <div class="bar" style="margin-top:10px"><button onclick="doImport()">导入</button><button class="sec" onclick="closeImport()">取消</button></div>
+  </div>
+</div>
+<script>
+const MANAGEMENT_BASE_PATH=__TT_MANAGEMENT_BASE_PATH_JSON__;
+const API=MANAGEMENT_BASE_PATH+"/plugins/toptools";
+const ENC_PREFIX="enc::v1::", SECRET_SALT="cli-proxy-api-webui::secure-storage", PANEL_STORE="cli-proxy-auth", SS_KEY="toptools-mgmt-key";
+function _enc(t){return new TextEncoder().encode(t)}
+function _dec(b){return new TextDecoder().decode(b)}
+function _keyBytes(){try{return _enc(SECRET_SALT+"|"+location.host+"|"+navigator.userAgent)}catch(e){return _enc(SECRET_SALT)}}
+function _xor(d,k){const r=new Uint8Array(d.length);for(let i=0;i<d.length;i++)r[i]=d[i]^k[i%k.length];return r}
+function _b64d(s){const bin=atob(s);const b=new Uint8Array(bin.length);for(let i=0;i<bin.length;i++)b[i]=bin.charCodeAt(i);return b}
+function deobfuscate(p){if(!p||!p.startsWith(ENC_PREFIX))return p;try{return _dec(_xor(_b64d(p.slice(ENC_PREFIX.length)),_keyBytes()))}catch(e){return p}}
+function isEmbedded(){try{return window.self!==window.top}catch(e){return true}}
+function readPanelKey(){if(!isEmbedded())return null;let raw;try{raw=localStorage.getItem(PANEL_STORE)}catch(e){return null}
+  if(!raw)return null;try{const p=JSON.parse(deobfuscate(raw));const st=(p&&p.state)||p||{};return typeof st.managementKey==="string"?st.managementKey:null}catch(e){return null}}
+(function(){const u=new URL(location.href);const k=u.searchParams.get("key");if(!k)return;try{sessionStorage.setItem(SS_KEY,k)}finally{u.searchParams.delete("key");history.replaceState(null,"",u.pathname+u.search)}})();
+function getKey(){try{return sessionStorage.getItem(SS_KEY)||readPanelKey()}catch(e){return readPanelKey()}}
+function saveKey(){const v=document.getElementById("keyInput").value.trim();if(!v)return;sessionStorage.setItem(SS_KEY,v);document.getElementById("authBox").style.display="none";load()}
+function showAuth(){document.getElementById("authBox").style.display="block"}
+function esc(s){return String(s||"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]))}
+async function api(path, opts={}){
+  const k=getKey();
+  const r=await fetch(API+path,{...opts,credentials:"omit",headers:{...(opts.headers||{}),...(k?{Authorization:"Bearer "+k}:{}),...(opts.body?{"content-type":"application/json"}:{})}});
+  const t=await r.text(); let d; try{d=JSON.parse(t)}catch{d={raw:t}}
+  if(r.status===401){showAuth();throw new Error("management key 无效或缺失")}
+  if(!r.ok) throw new Error((d&&d.error)||t.slice(0,200)||("HTTP "+r.status));
+  return d;
+}
+function openImport(){document.getElementById("importModal").classList.add("show")}
+function closeImport(){document.getElementById("importModal").classList.remove("show")}
+async function doImport(){
+  const raw=document.getElementById("importRaw").value.trim(); if(!raw)return;
+  const d=await api("/import",{method:"POST",body:JSON.stringify(raw.startsWith("{")?{raw}:{key:raw})});
+  if(d&&d.success===false) throw new Error(d.error||"import failed");
+  closeImport(); load();
+}
+function nfmt(n){n=Number(n||0);if(n>=1e6)return (n/1e6).toFixed(1)+"M";if(n>=1e3)return (n/1e3).toFixed(1)+"K";return String(n)}
+function meter(used,limit){if(!limit)return "";const p=Math.max(0,Math.min(100,used/limit*100));return `<div class="track"><span class="fill" style="width:${p}%"></span></div>`}
+function renderPlan(p){
+  if(!p) return '';
+  if(p.error) return `<div class="uid">${esc(p.error)}</div>`;
+  const dailyLimit=p.daily_limit||1e7, dailyRem=p.daily_remaining, dailyUsed=p.daily_used||0;
+  const owned=(p.owned||[]).map(m=>{
+    const free=m.accessType==="free";
+    const bar=free?meter(m.tokensUsed||0, m.tokenLimit||1e7):"";
+    const sub=free?`${nfmt(m.tokensRemaining||0)} / ${nfmt(m.tokenLimit||1e7)} Top-Tools-Ai tokens left today`:(m.expiresAt?("Expires "+esc(String(m.expiresAt).slice(0,10))):esc(m.tier||""));
+    return `<div><strong>${esc(m.modelName||"?")}</strong> <span class="uid">${esc(m.tier||m.accessType||"")}</span><div class="uid">${sub}</div>${bar}</div>`;
+  }).join("");
+  return `<div class="stats">
+    <div class="stat"><div class="k">Requests</div><div class="v">${nfmt(p.requests)}</div></div>
+    <div class="stat"><div class="k">Total Tokens</div><div class="v">${nfmt(p.tokens_used)}</div></div>
+    <div class="stat"><div class="k">Images</div><div class="v">${nfmt(p.images_used)}</div></div>
+  </div>
+  <div class="uid">PAYG ${esc(p.balance_usd||"$0.00")} · Welcome ${nfmt(p.welcome_remaining)} / ${nfmt(p.welcome_limit)}</div>
+  <div class="uid" style="margin-top:6px">Top-Tools-Ai daily ${nfmt(dailyRem)} / ${nfmt(dailyLimit)} left</div>
+  ${meter(dailyUsed, dailyLimit)}
+  ${owned?`<div class="owned"><div class="k" style="font-size:11px;color:var(--mut)">Owned models</div>${owned}</div>`:""}`;
+}
+function render(d){
+  const acc=d.accounts||[];
+  const g=document.getElementById("grid");
+  if(!acc.length){g.innerHTML='<div class="loading">还没有 key。登录网站创建后点导入。</div>';return}
+  g.innerHTML=acc.map(a=>{const cooled=a.disabled||(a.plan&&a.plan.cooled); const label=cooled?("冷却"+(a.plan&&a.plan.cool_reason?" · "+a.plan.cool_reason:"")):(a.alive?"存活":"失效"); return `<div class="card"><div style="display:flex;justify-content:space-between"><strong>${esc(a.nickname||a.uid)}</strong><span class="badge ${cooled?"cool":(a.alive?"ok":"dead")}">${esc(label)}</span></div>
+    <div class="uid">${esc(a.email||a.uid||"")} · ${esc(a.key_prefix||"")}</div>
+    ${renderPlan(a.plan)}</div>`}).join("");
+}
+async function load(){
+  if(!getKey()){showAuth();document.getElementById("grid").innerHTML='<div class="loading">请先填 management key</div>';return}
+  document.getElementById("refreshBtn").disabled=true;
+  try{render(await api("/accounts"))}catch(e){document.getElementById("grid").innerHTML='<div class="loading">'+esc(e.message||e)+'</div>'}
+  finally{document.getElementById("refreshBtn").disabled=false}
+}
+load();
+</script>
+</body>
+</html>

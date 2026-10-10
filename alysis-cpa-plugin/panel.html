@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="zh-CN" class="h-full">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Alysis</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+tailwind.config={darkMode:'class'};
+(function(){
+  const sync=()=>{try{
+    const p=window.parent&&window.parent.document&&window.parent.document.documentElement;
+    const t=(p&&p.getAttribute('data-theme'))||localStorage.getItem('cli-proxy-theme')||'';
+    document.documentElement.classList.toggle('dark', t==='dark');
+  }catch(e){}};
+  sync();
+  try{new MutationObserver(sync).observe(window.parent.document.documentElement,{attributes:true,attributeFilter:['data-theme']});}catch(e){}
+})();
+</script>
+</head>
+<body class="min-h-full m-0 bg-stone-50 text-stone-800 dark:bg-stone-900 dark:text-stone-100 text-sm antialiased overflow-x-hidden">
+<div class="max-w-6xl mx-auto p-4 sm:p-6 min-w-0">
+  <div class="flex flex-wrap items-end justify-between gap-3 mb-4 min-w-0">
+    <div class="min-w-0">
+      <h1 class="text-xl font-semibold truncate">Alysis</h1>
+      <p class="text-xs text-stone-500 dark:text-stone-400 truncate">
+        <a class="text-sky-600 dark:text-sky-400 hover:underline" href="https://alysiscode.com/account/usage" target="_blank" rel="noreferrer">account/usage</a>
+        · JWT 已存则自动拉额度
+      </p>
+    </div>
+    <div class="flex gap-2 shrink-0">
+      <button type="button" class="px-3 py-1.5 rounded-lg bg-stone-200 dark:bg-stone-700" onclick="openImport()">导入</button>
+      <button type="button" id="refreshBtn" class="px-3 py-1.5 rounded-lg bg-sky-500 text-white disabled:opacity-50" onclick="load()">刷新</button>
+    </div>
+  </div>
+  <div id="authBox" class="hidden mb-4 rounded-xl border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-800 p-4 min-w-0">
+    <p class="text-xs text-stone-500 mb-2">需要 CPA management key</p>
+    <div class="flex gap-2 min-w-0">
+      <input id="keyInput" type="password" class="flex-1 min-w-0 rounded-lg border border-stone-200 dark:border-stone-600 bg-stone-50 dark:bg-stone-900 px-3 py-2" placeholder="management key">
+      <button type="button" class="shrink-0 px-3 py-2 rounded-lg bg-sky-500 text-white" onclick="saveKey()">连接</button>
+    </div>
+  </div>
+  <div id="summaryBox" class="hidden mb-4 grid grid-cols-3 gap-2 min-w-0"></div>
+  <p id="meta" class="text-xs text-stone-500 mb-3"></p>
+  <div id="grid" class="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-3 min-w-0">
+    <div class="col-span-full text-center text-stone-500 py-10">加载中…</div>
+  </div>
+</div>
+<div id="importModal" class="hidden fixed inset-0 z-20 bg-black/40 items-center justify-center p-4" onclick="if(event.target===this)closeImport()">
+  <div class="w-full max-w-md rounded-2xl bg-white dark:bg-stone-800 p-4 min-w-0 shadow-xl">
+    <h2 class="font-semibold mb-1">导入 slk_</h2>
+    <textarea id="importRaw" class="w-full min-h-[7rem] rounded-lg border border-stone-200 dark:border-stone-600 bg-stone-50 dark:bg-stone-900 p-2 font-mono text-xs" placeholder="slk_…"></textarea>
+    <div class="flex gap-2 mt-3">
+      <button type="button" class="px-3 py-1.5 rounded-lg bg-sky-500 text-white" onclick="doImport()">导入</button>
+      <button type="button" class="px-3 py-1.5 rounded-lg bg-stone-200 dark:bg-stone-700" onclick="closeImport()">取消</button>
+    </div>
+  </div>
+</div>
+<script>
+const MANAGEMENT_BASE_PATH=__ALYSIS_MANAGEMENT_BASE_PATH_JSON__;
+const API=MANAGEMENT_BASE_PATH+"/plugins/alysis";
+const ENC_PREFIX="enc::v1::", SECRET_SALT="cli-proxy-api-webui::secure-storage", PANEL_STORE="cli-proxy-auth", SS_KEY="alysis-mgmt-key";
+function _enc(t){return new TextEncoder().encode(t)}
+function _dec(b){return new TextDecoder().decode(b)}
+function _keyBytes(){try{return _enc(SECRET_SALT+"|"+location.host+"|"+navigator.userAgent)}catch(e){return _enc(SECRET_SALT)}}
+function _xor(d,k){const r=new Uint8Array(d.length);for(let i=0;i<d.length;i++)r[i]=d[i]^k[i%k.length];return r}
+function _b64d(s){const bin=atob(s);const b=new Uint8Array(bin.length);for(let i=0;i<bin.length;i++)b[i]=bin.charCodeAt(i);return b}
+function deobfuscate(p){if(!p||!p.startsWith(ENC_PREFIX))return p;try{return _dec(_xor(_b64d(p.slice(ENC_PREFIX.length)),_keyBytes()))}catch(e){return p}}
+function isEmbedded(){try{return window.self!==window.top}catch(e){return true}}
+function readPanelKey(){if(!isEmbedded())return null;let raw;try{raw=localStorage.getItem(PANEL_STORE)}catch(e){return null}
+  if(!raw)return null;try{const p=JSON.parse(deobfuscate(raw));const st=(p&&p.state)||p||{};return typeof st.managementKey==="string"?st.managementKey:null}catch(e){return null}}
+(function(){const u=new URL(location.href);const k=u.searchParams.get("key");if(!k)return;try{sessionStorage.setItem(SS_KEY,k)}finally{u.searchParams.delete("key");history.replaceState(null,"",u.pathname+u.search)}})();
+function getKey(){try{return sessionStorage.getItem(SS_KEY)||readPanelKey()}catch(e){return readPanelKey()}}
+function saveKey(){const v=document.getElementById("keyInput").value.trim();if(!v)return;sessionStorage.setItem(SS_KEY,v);document.getElementById("authBox").classList.add("hidden");load()}
+function showAuth(){document.getElementById("authBox").classList.remove("hidden")}
+function esc(s){return String(s||"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]))}
+async function api(path, opts={}){
+  const k=getKey();
+  const r=await fetch(API+path,{...opts,credentials:"omit",headers:{...(opts.headers||{}),...(k?{Authorization:"Bearer "+k}:{}),...(opts.body?{"content-type":"application/json"}:{})}});
+  const t=await r.text(); let d; try{d=JSON.parse(t)}catch{d={raw:t}}
+  if(r.status===401){showAuth();throw new Error("management key 无效或缺失")}
+  if(!r.ok) throw new Error((d&&d.error)||String(t).slice(0,120)||("HTTP "+r.status));
+  return d;
+}
+function openImport(){const m=document.getElementById("importModal"); m.classList.remove("hidden"); m.classList.add("flex")}
+function closeImport(){const m=document.getElementById("importModal"); m.classList.add("hidden"); m.classList.remove("flex")}
+async function doImport(){
+  const raw=document.getElementById("importRaw").value.trim(); if(!raw)return;
+  const d=await api("/import",{method:"POST",body:JSON.stringify(raw.startsWith("{")?{raw}:{key:raw})});
+  if(d&&d.success===false) throw new Error(d.error||"import failed");
+  closeImport(); load();
+}
+function pct(used,limit){if(!limit)return 0;return Math.max(0,Math.min(100,Number(used)/Number(limit)*100))}
+function bar(used,limit){
+  const w=pct(used,limit);
+  return `<div class="h-1.5 w-full rounded-full bg-stone-200 dark:bg-stone-700 overflow-hidden"><div class="h-full ${w>=85?'bg-rose-500':'bg-emerald-500'}" style="width:${w}%"></div></div>`;
+}
+function needsRecover(p){return p&&p.error&&/no session|jwt|password|429|rate limit/i.test(String(p.error))}
+function badge(a){
+  const cooled=a.disabled||(a.plan&&a.plan.cooled);
+  if(!a.plan) return a.disabled
+    ? ['冷却','bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-200']
+    : ['待查','bg-stone-100 text-stone-600 dark:bg-stone-700 dark:text-stone-300'];
+  if(cooled) return ['冷却','bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-200'];
+  if(a.plan.error) return ['失败','bg-rose-100 text-rose-800 dark:bg-rose-900/40 dark:text-rose-200'];
+  return ['存活','bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-200'];
+}
+function renderPlan(p){
+  if(!p) return '';
+  if(p.error) return `<p class="mt-2 text-xs text-rose-500 break-words line-clamp-3" title="${esc(p.error)}">${esc(p.error)}</p>`;
+  const models=(p.models||[]).slice(0,6).map(m=>`<div class="min-w-0"><div class="truncate text-[11px] text-stone-500" title="${esc(m.label)}">${esc(m.label)} <span class="text-sky-500">${esc(m.badge||'')}</span></div>
+    ${bar(m.month_used,m.month_limit)}</div>`).join('');
+  return `<div class="mt-3 min-w-0">
+    <div class="text-2xl font-semibold tabular-nums truncate">${esc(p.credits_left)}<span class="text-xs font-medium text-stone-400"> / ${esc(p.allowance)}</span></div>
+    <p class="text-[11px] text-stone-500 truncate">${esc(p.plan||'')} · ${esc(p.tagline||'')}</p>
+    ${bar((p.allowance||0)-(p.credits_left||0), p.allowance||1)}
+    <div class="mt-2 grid grid-cols-2 gap-2 min-w-0 text-[11px]">
+      <div class="min-w-0"><div class="text-stone-400 truncate">5h ${esc(p.burn_5h)}/${esc(p.cap_5h)}</div>${bar(p.burn_5h,p.cap_5h)}</div>
+      <div class="min-w-0"><div class="text-stone-400 truncate">7d ${esc(p.burn_7d)}/${esc(p.cap_7d)}</div>${bar(p.burn_7d,p.cap_7d)}</div>
+    </div>
+    ${models?`<div class="mt-2 space-y-1 min-w-0">${models}</div>`:''}
+  </div>`;
+}
+function cardHTML(a){
+  const [lab,bcls]=badge(a);
+  let plan=a.plan?renderPlan(a.plan):'<p class="mt-2 text-xs text-stone-400">额度加载中…</p>';
+  if(needsRecover(a.plan)) plan+=`<button type="button" class="recover mt-2 text-xs px-2 py-1 rounded-md bg-sky-500 text-white">手动恢复</button>`;
+  return `<div class="min-w-0 overflow-hidden rounded-xl border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-800 p-4" data-id="${esc(a.auth_index)}">
+    <div class="flex items-start gap-2 min-w-0">
+      <div class="min-w-0 flex-1">
+        <div class="font-medium truncate" title="${esc(a.nickname||a.uid)}">${esc(a.nickname||a.email||a.uid)}</div>
+        <div class="text-[11px] font-mono text-stone-500 truncate">${esc(a.email||a.uid||'')}</div>
+        <div class="text-[11px] font-mono text-stone-400 truncate">${esc(a.key_prefix||'')}</div>
+      </div>
+      <span class="shrink-0 max-w-[42%] truncate text-[11px] font-semibold px-2 py-0.5 rounded-full ${bcls}">${esc(lab)}</span>
+    </div>
+    <div class="plan min-w-0">${plan}</div>
+  </div>`;
+}
+function render(d){
+  const acc=d.accounts||[];
+  window.__acc=acc;
+  const box=document.getElementById("summaryBox");
+  box.classList.remove("hidden");
+  box.innerHTML=`<div class="rounded-lg bg-stone-100 dark:bg-stone-800 p-3 min-w-0"><div class="text-[10px] text-stone-500">账号</div><div class="text-lg font-semibold tabular-nums">${acc.length}</div></div>
+    <div class="rounded-lg bg-stone-100 dark:bg-stone-800 p-3 min-w-0"><div class="text-[10px] text-stone-500">冷却</div><div class="text-lg font-semibold tabular-nums">${acc.filter(a=>a.disabled).length}</div></div>
+    <div class="rounded-lg bg-stone-100 dark:bg-stone-800 p-3 min-w-0"><div class="text-[10px] text-stone-500">有会话</div><div class="text-lg font-semibold tabular-nums">${acc.filter(a=>a.has_session).length}</div></div>`;
+  document.getElementById("meta").textContent="已存 JWT 自动拉额度 · 失败点「手动恢复」";
+  const g=document.getElementById("grid");
+  if(!acc.length){g.innerHTML='<div class="col-span-full text-center text-stone-500 py-10">还没有凭证</div>';return}
+  g.innerHTML=acc.map(cardHTML).join("");
+  g.onclick=e=>{
+    const rec=e.target.closest(".recover");
+    const el=e.target.closest("[data-id]");
+    if(rec&&el) loadOne(el.getAttribute("data-id"), true);
+  };
+  fillPlans(acc);
+}
+async function fillPlans(acc){
+  const q=[...acc];
+  await Promise.all(Array.from({length:3}, async()=>{
+    while(q.length){const a=q.shift(); await loadOne(a.auth_index, false);}
+  }));
+}
+async function loadOne(id, login){
+  const el=document.querySelector(`[data-id="${CSS.escape(id)}"]`);
+  if(el){const p=el.querySelector(".plan"); if(p) p.innerHTML='<p class="mt-2 text-xs text-stone-400">拉取中…</p>';}
+  try{
+    const d=await api("/plan",{method:"POST",body:JSON.stringify({auth_index:id, login:!!login})});
+    const a=(window.__acc||[]).find(x=>x.auth_index===id)||{auth_index:id};
+    Object.assign(a,{plan:d.plan, alive:d.alive, disabled:d.disabled});
+    const n=document.querySelector(`[data-id="${CSS.escape(id)}"]`);
+    if(n) n.outerHTML=cardHTML(a);
+  }catch(e){
+    const n=document.querySelector(`[data-id="${CSS.escape(id)}"]`);
+    if(n){const p=n.querySelector(".plan"); if(p) p.innerHTML='<p class="mt-2 text-xs text-rose-500 break-words line-clamp-3">'+esc(e.message||e)+'</p><button type="button" class="recover mt-2 text-xs px-2 py-1 rounded-md bg-sky-500 text-white">手动恢复</button>';}
+  }
+}
+async function load(){
+  if(!getKey()){showAuth();document.getElementById("grid").innerHTML='<div class="col-span-full text-center text-stone-500 py-10">请先填 management key</div>';return}
+  document.getElementById("refreshBtn").disabled=true;
+  try{render(await api("/accounts"))}catch(e){document.getElementById("grid").innerHTML='<div class="col-span-full text-center text-rose-500 py-10 break-words">'+esc(e.message||e)+'</div>'}
+  finally{document.getElementById("refreshBtn").disabled=false}
+}
+load();
+</script>
+</body>
+</html>
