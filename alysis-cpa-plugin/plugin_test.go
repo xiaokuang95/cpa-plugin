@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -204,5 +205,47 @@ func TestApplyUpstreamHeaders(t *testing.T) {
 	}
 	if req.Header.Get("anthropic-version") != anthropicVersion {
 		t.Fatal("missing anthropic-version")
+	}
+}
+
+func TestSolveTurnstileRequiresBuildFlags(t *testing.T) {
+	oldBase, oldKey := solverBase, turnstileSiteKey
+	solverBase, turnstileSiteKey = "", "k"
+	defer func() { solverBase, turnstileSiteKey = oldBase, oldKey }()
+	if _, err := solveTurnstile("https://alysiscode.com/login", "login", ""); err == nil {
+		t.Fatal("empty solverBase should fail")
+	}
+}
+
+func TestSolveTurnstile(t *testing.T) {
+	nResult := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasPrefix(r.URL.Path, "/turnstile"):
+			if r.URL.Query().Get("sitekey") == "" || r.URL.Query().Get("url") == "" {
+				t.Errorf("missing query: %s", r.URL.RawQuery)
+			}
+			w.WriteHeader(http.StatusAccepted)
+			_, _ = w.Write([]byte(`{"task_id":"t1","status":"accepted"}`))
+		case r.URL.Path == "/result":
+			nResult++
+			if nResult == 1 {
+				_, _ = w.Write([]byte(`{"status":"processing"}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"status":"success","value":"tok_ok"}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+	oldBase, oldKey, oldPoll, oldTries := solverBase, turnstileSiteKey, solverPoll, solverTries
+	solverBase, turnstileSiteKey, solverPoll, solverTries = srv.URL, "sitekey", 0, 5
+	defer func() {
+		solverBase, turnstileSiteKey, solverPoll, solverTries = oldBase, oldKey, oldPoll, oldTries
+	}()
+	tok, err := solveTurnstile("https://alysiscode.com/login", "login", "")
+	if err != nil || tok != "tok_ok" {
+		t.Fatalf("got %q %v", tok, err)
 	}
 }

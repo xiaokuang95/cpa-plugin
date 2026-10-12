@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -91,6 +92,88 @@ func jwtFresh(sa *storedAuth) bool {
 var loginBackoffUntil time.Time
 var sessionLocks sync.Map
 
+var (
+	solverBase       string // -X main.solverBase
+	turnstileSiteKey string // -X main.turnstileSiteKey
+	solverPoll       = 2 * time.Second
+	solverTries      = 40
+)
+
+func solveTurnstile(pageURL, action, callbackID string) (string, error) {
+	if strings.TrimSpace(solverBase) == "" || strings.TrimSpace(turnstileSiteKey) == "" {
+		return "", fmt.Errorf("solver not baked in")
+	}
+	u, err := url.Parse(strings.TrimRight(solverBase, "/") + "/turnstile")
+	if err != nil {
+		return "", err
+	}
+	q := u.Query()
+	q.Set("url", pageURL)
+	q.Set("sitekey", turnstileSiteKey)
+	if action != "" {
+		q.Set("action", action)
+	}
+	u.RawQuery = q.Encode()
+	var tid string
+	for n := 0; n < 8; n++ {
+		resp, err := getJSON(u.String(), nil, callbackID)
+		if err != nil {
+			return "", err
+		}
+		if resp.StatusCode == 429 {
+			time.Sleep(time.Duration(n+1) * 3 * time.Second)
+			continue
+		}
+		if resp.StatusCode >= 400 {
+			return "", fmt.Errorf("solver HTTP %d: %s", resp.StatusCode, truncate(string(resp.Body), 120))
+		}
+		var created struct {
+			TaskID string `json:"task_id"`
+		}
+		if err := json.Unmarshal(resp.Body, &created); err != nil || created.TaskID == "" {
+			return "", fmt.Errorf("solver: no task_id")
+		}
+		tid = created.TaskID
+		break
+	}
+	if tid == "" {
+		return "", fmt.Errorf("solver HTTP 429")
+	}
+	resultURL := strings.TrimRight(solverBase, "/") + "/result?id=" + url.QueryEscape(tid)
+	for i := 0; i < solverTries; i++ {
+		if i > 0 {
+			time.Sleep(solverPoll)
+		}
+		resp, err := getJSON(resultURL, nil, callbackID)
+		if err != nil {
+			return "", err
+		}
+		if resp.StatusCode >= 400 {
+			continue
+		}
+		var body struct {
+			Status string `json:"status"`
+			Value  string `json:"value"`
+		}
+		if len(resp.Body) == 0 {
+			continue
+		}
+		if err := json.Unmarshal(resp.Body, &body); err != nil {
+			continue
+		}
+		switch strings.ToLower(body.Status) {
+		case "success":
+			if body.Value == "" {
+				return "", fmt.Errorf("solver: empty token")
+			}
+			return body.Value, nil
+		case "failed", "error":
+			return "", fmt.Errorf("solver failed: %s", truncate(string(resp.Body), 120))
+		}
+	}
+	return "", fmt.Errorf("solver timeout")
+}
+
 func lockSession(fileName string) func() {
 	v, _ := sessionLocks.LoadOrStore(fileName, &sync.Mutex{})
 	mu := v.(*sync.Mutex)
@@ -156,7 +239,15 @@ func sessionJWT(sa *storedAuth, fileName, callbackID string, force, allowPasswor
 			}
 			return "", fmt.Errorf("no supabase session (auth file has no password)")
 		}
-		resp, err := postJSON(AUTH+"/token?grant_type=password", fnHeaders(), map[string]string{"email": email, "password": pass}, callbackID)
+		captcha, err := solveTurnstile(siteURL+"/login", "login", callbackID)
+		if err != nil {
+			return "", fmt.Errorf("turnstile: %w", err)
+		}
+		resp, err := postJSON(AUTH+"/token?grant_type=password", fnHeaders(), map[string]any{
+			"email":    email,
+			"password": pass,
+			"gotrue_meta_security": map[string]string{"captcha_token": captcha},
+		}, callbackID)
 		if err != nil {
 			return "", err
 		}
