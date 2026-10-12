@@ -105,7 +105,7 @@ func refreshTokenSpent(body []byte) bool {
 
 func sessionJWT(sa *storedAuth, fileName, callbackID string, force, allowPassword bool) (string, error) {
 	if sa == nil {
-		return "", fmt.Errorf("no supabase session")
+		return "", fmt.Errorf("no supabase session (empty auth)")
 	}
 	if fileName != "" {
 		defer lockSession(fileName)()
@@ -154,7 +154,7 @@ func sessionJWT(sa *storedAuth, fileName, callbackID string, force, allowPasswor
 			if last != nil {
 				return "", last
 			}
-			return "", fmt.Errorf("no supabase session")
+			return "", fmt.Errorf("no supabase session (auth file has no password)")
 		}
 		resp, err := postJSON(AUTH+"/token?grant_type=password", fnHeaders(), map[string]string{"email": email, "password": pass}, callbackID)
 		if err != nil {
