@@ -89,10 +89,26 @@ func jwtFresh(sa *storedAuth) bool {
 }
 
 var loginBackoffUntil time.Time
+var sessionLocks sync.Map
+
+func lockSession(fileName string) func() {
+	v, _ := sessionLocks.LoadOrStore(fileName, &sync.Mutex{})
+	mu := v.(*sync.Mutex)
+	mu.Lock()
+	return mu.Unlock
+}
+
+func refreshTokenSpent(body []byte) bool {
+	s := strings.ToLower(string(body))
+	return strings.Contains(s, "refresh_token_already_used") || strings.Contains(s, "already used")
+}
 
 func sessionJWT(sa *storedAuth, fileName, callbackID string, force, allowPassword bool) (string, error) {
 	if sa == nil {
 		return "", fmt.Errorf("no supabase session")
+	}
+	if fileName != "" {
+		defer lockSession(fileName)()
 	}
 	if !force && jwtFresh(sa) {
 		return sa.Auth.SessionAccess, nil
@@ -119,11 +135,16 @@ func sessionJWT(sa *storedAuth, fileName, callbackID string, force, allowPasswor
 		resp, err := postJSON(AUTH+"/token?grant_type=refresh_token", fnHeaders(), map[string]string{"refresh_token": rt}, callbackID)
 		if err != nil {
 			last = err
+		} else if refreshTokenSpent(resp.Body) {
+			sa.Auth.SessionRefresh = ""
+			persistAuth(fileName, sa, false, "")
+			last = apply(resp, "session refresh")
 		} else {
 			last = apply(resp, "session refresh")
 		}
 	}
-	if tok.AccessToken == "" && allowPassword {
+	canPassword := allowPassword || sa.Auth.SessionRefresh == ""
+	if tok.AccessToken == "" && canPassword {
 		if time.Now().Before(loginBackoffUntil) {
 			return "", fmt.Errorf("password login 429, wait until %s", loginBackoffUntil.Format(time.RFC3339))
 		}
