@@ -57,14 +57,44 @@ func TestParseAuthClaim(t *testing.T) {
 	}
 }
 
+func TestParseLoginAction(t *testing.T) {
+	html := `<input type="hidden" name="$ACTION_1:0" value="{&quot;id&quot;:&quot;6082ccf004d09adce5395e090a56955d6ba1e99c75&quot;,&quot;bound&quot;:&quot;$@1&quot;}"/>
+<input type="hidden" name="$ACTION_KEY" value="kaf752891006e153cd1bf1bdcd14addfd"/>`
+	ref, key, err := parseLoginAction(html)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if key != "kaf752891006e153cd1bf1bdcd14addfd" {
+		t.Fatalf("key %q", key)
+	}
+	var id struct {
+		ID string `json:"id"`
+	}
+	if json.Unmarshal([]byte(ref), &id) != nil || id.ID != "6082ccf004d09adce5395e090a56955d6ba1e99c75" {
+		t.Fatalf("ref %q", ref)
+	}
+}
+
+func TestSessionCookiePresent(t *testing.T) {
+	if !sessionCookiePresent("a=1; sb-auth-auth-token.0=base64-x") {
+		t.Fatal("missing detect")
+	}
+	if !sessionCookiePresent("sb-isbnzmwjmtiuipesgmmg-auth-token=x") {
+		t.Fatal("project cookie")
+	}
+	if sessionCookiePresent("cf_clearance=x") {
+		t.Fatal("false positive")
+	}
+}
+
 func TestCookieFresh(t *testing.T) {
 	sa := &storedAuth{Auth: storedTokens{SessionCookie: "sb-auth-auth-token=x", SessionExpiresAt: time.Now().Add(time.Hour).Unix()}}
 	if !cookieFresh(sa) {
 		t.Fatal("fresh cookie should reuse")
 	}
-	sa.Auth.SessionExpiresAt = time.Now().Add(time.Minute).Unix()
-	if cookieFresh(sa) {
-		t.Fatal("cookie near expiry should not reuse")
+	sa.Auth.SessionExpiresAt = time.Now().Add(-time.Hour).Unix()
+	if !cookieFresh(sa) {
+		t.Fatal("stored cookie should still be tried")
 	}
 }
 

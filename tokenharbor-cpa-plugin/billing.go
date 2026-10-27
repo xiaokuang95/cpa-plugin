@@ -1,9 +1,13 @@
 package main
 
 import (
-	"encoding/base64"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -11,9 +15,8 @@ import (
 
 const (
 	freeTierURL = siteURL + "/api/me/free-tier"
-	authAPI     = "https://auth.tokenharbor.ai/auth/v1"
-	anonKey     = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImlzYm56bXdqbXRpdWlwZXNnbW1nIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzY3NjU1MzYsImV4cCI6MjA5MjM0MTUzNn0.CodUcchio6jNW_k68vaAb--LshBQXK51tZ6VTxNSz_A"
-	cookieChunk = 3180
+	loginURL    = siteURL + "/login"
+	loginUA     = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36"
 )
 
 type planView struct {
@@ -112,111 +115,201 @@ func fetchDashboard(sa *storedAuth, fileName, callbackID string, allowPassword b
 }
 
 func cookieFresh(sa *storedAuth) bool {
-	if sa == nil || sa.Auth.SessionCookie == "" {
-		return false
-	}
-	if sa.Auth.SessionExpiresAt == 0 {
-		return true
-	}
-	return sa.Auth.SessionExpiresAt > time.Now().Add(2*time.Minute).Unix()
+	return sa != nil && strings.TrimSpace(sa.Auth.SessionCookie) != ""
 }
 
-var loginBackoffUntil time.Time
+var (
+	loginBackoffUntil time.Time
+	loginMu           sync.Mutex
+	lastPasswordLogin time.Time
+)
+
+var (
+	actionRefRe = regexp.MustCompile(`name="\$ACTION_1:0"\s+value="([^"]*)"`)
+	actionKeyRe = regexp.MustCompile(`name="\$ACTION_KEY"\s+value="([^"]*)"`)
+	signupErrRe = regexp.MustCompile(`(?m)^1:\{"error":"([^"]+)"`)
+)
 
 func sessionCookie(sa *storedAuth, fileName, callbackID string, force, allowPassword bool) (string, error) {
 	if sa == nil {
 		return "", fmt.Errorf("no auth")
 	}
-	if !force && cookieFresh(sa) {
+	if sa.Auth.SessionCookie != "" && !force {
 		return sa.Auth.SessionCookie, nil
 	}
-	sa.Auth.SessionCookie = ""
-	sa.Auth.SessionExpiresAt = 0
-	var sess map[string]any
-	var last error
-	if rt := strings.TrimSpace(sa.Auth.RefreshToken); rt != "" {
-		sess, last = grantToken(map[string]string{"refresh_token": rt}, "refresh_token", callbackID)
-	}
-	if sess == nil && allowPassword {
-		if time.Now().Before(loginBackoffUntil) {
-			return "", fmt.Errorf("password login 429, wait until %s", loginBackoffUntil.Format(time.RFC3339))
-		}
-		email := strings.TrimSpace(sa.Account.Email)
-		pass := strings.TrimSpace(sa.Account.Password)
-		if email == "" || pass == "" {
-			if last != nil {
-				return "", last
-			}
-			return "", fmt.Errorf("need email+password for /api/me/free-tier (API key is not a session)")
-		}
-		sess, last = grantToken(map[string]string{"email": email, "password": pass}, "password", callbackID)
-		if last != nil {
-			return "", last
-		}
-	}
-	if sess == nil {
-		if last != nil {
-			return "", last
+	if !allowPassword {
+		if sa.Auth.SessionCookie != "" {
+			return sa.Auth.SessionCookie, nil
 		}
 		return "", fmt.Errorf("no session cookie (click card to login)")
 	}
-	cookie := encodeSBCookie(sess)
-	exp := time.Now().Add(50 * time.Minute).Unix()
-	if v, ok := sess["expires_at"].(float64); ok && v > 0 {
-		exp = int64(v)
+	if time.Now().Before(loginBackoffUntil) {
+		return "", fmt.Errorf("password login 429, wait until %s", loginBackoffUntil.Format(time.RFC3339))
+	}
+	email := strings.TrimSpace(sa.Account.Email)
+	pass := strings.TrimSpace(sa.Account.Password)
+	if email == "" || pass == "" {
+		return "", fmt.Errorf("need email+password for /api/me/free-tier (API key is not a session)")
+	}
+	loginMu.Lock()
+	wait := 15*time.Second - time.Since(lastPasswordLogin)
+	if wait > 0 {
+		time.Sleep(wait)
+	}
+	cookie, exp, err := loginSessionCookie(email, pass, callbackID)
+	lastPasswordLogin = time.Now()
+	loginMu.Unlock()
+	if err != nil {
+		return "", err
 	}
 	sa.Auth.SessionCookie = cookie
 	sa.Auth.SessionExpiresAt = exp
-	if nrt, _ := sess["refresh_token"].(string); nrt != "" {
-		sa.Auth.RefreshToken = nrt
-	}
 	persistSession(sa, fileName)
 	return cookie, nil
 }
 
-func grantToken(body map[string]string, grant, callbackID string) (map[string]any, error) {
-	resp, err := postJSON(authAPI+"/token?grant_type="+grant, map[string]string{
-		"apikey":        anonKey,
-		"Authorization": "Bearer " + anonKey,
-	}, body, callbackID)
+func loginSessionCookie(email, password, callbackID string) (string, int64, error) {
+	_ = callbackID
+	page, err := loginDo(http.MethodGet, loginURL, nil, map[string]string{"Accept": "text/html"})
 	if err != nil {
-		return nil, err
+		return "", 0, err
+	}
+	cookie := cookieHeader(page.Headers)
+	ref, key, err := parseLoginAction(string(page.Body))
+	if err != nil {
+		return "", 0, err
+	}
+	body, boundary := buildLoginForm(email, password, ref, key)
+	headers := map[string]string{
+		"Content-Type": "multipart/form-data; boundary=" + boundary,
+		"Accept":       "text/html",
+		"Origin":       siteURL,
+		"Referer":      loginURL,
+	}
+	if cookie != "" {
+		headers["Cookie"] = cookie
+	}
+	resp, err := loginDo(http.MethodPost, loginURL, strings.NewReader(body), headers)
+	if err != nil {
+		return "", 0, err
 	}
 	if resp.StatusCode == 429 {
 		loginBackoffUntil = time.Now().Add(10 * time.Minute)
-		return nil, fmt.Errorf("%s HTTP 429 rate limit, pause logins 10m", grant)
+		return "", 0, fmt.Errorf("password login 429, pause 10m")
 	}
-	if resp.StatusCode >= 400 {
-		return nil, fmt.Errorf("%s HTTP %d: %s", grant, resp.StatusCode, shortErr(string(resp.Body)))
+	text := string(resp.Body)
+	if m := signupErrRe.FindStringSubmatch(text); len(m) == 2 {
+		return "", 0, fmt.Errorf("login: %s", m[1])
 	}
-	var sess map[string]any
-	if err := json.Unmarshal(resp.Body, &sess); err != nil {
-		return nil, err
+	if joined := cookieHeader(resp.Headers); joined != "" {
+		cookie = mergeCookies(cookie, joined)
 	}
-	return sess, nil
+	if !sessionCookiePresent(cookie) {
+		return "", 0, fmt.Errorf("login HTTP %d: no session cookie %s", resp.StatusCode, shortErr(text))
+	}
+	return cookie, time.Now().Add(50 * time.Minute).Unix(), nil
 }
 
-func encodeSBCookie(sess map[string]any) string {
-	keep := map[string]any{}
-	for _, k := range []string{"access_token", "token_type", "expires_in", "expires_at", "refresh_token", "user"} {
-		if v, ok := sess[k]; ok {
-			keep[k] = v
-		}
+func loginDo(method, rawURL string, body io.Reader, headers map[string]string) (*hostHTTPResponse, error) {
+	req, err := http.NewRequest(method, rawURL, body)
+	if err != nil {
+		return nil, err
 	}
-	raw, _ := json.Marshal(keep)
-	val := "base64-" + base64.StdEncoding.EncodeToString(raw)
-	if len(val) <= cookieChunk {
-		return "sb-auth-auth-token=" + val
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+	req.Header.Set("User-Agent", loginUA)
+	c := *sharedHTTPClient()
+	c.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	resp, err := c.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	return &hostHTTPResponse{StatusCode: resp.StatusCode, Headers: resp.Header.Clone(), Body: raw}, nil
+}
+
+func parseLoginAction(html string) (ref, key string, err error) {
+	rm := actionRefRe.FindStringSubmatch(html)
+	km := actionKeyRe.FindStringSubmatch(html)
+	if len(rm) < 2 || len(km) < 2 {
+		return "", "", fmt.Errorf("login page missing $ACTION_1:0")
+	}
+	return htmlUnescape(rm[1]), htmlUnescape(km[1]), nil
+}
+
+func htmlUnescape(s string) string {
+	r := strings.NewReplacer("&quot;", `"`, "&#x27;", "'", "&lt;", "<", "&gt;", ">", "&amp;", "&")
+	return r.Replace(s)
+}
+
+func buildLoginForm(email, password, ref, key string) (string, string) {
+	var b [8]byte
+	_, _ = rand.Read(b[:])
+	boundary := "----WebKitFormBoundary" + strings.ToUpper(hex.EncodeToString(b[:]))
+	fp := hex.EncodeToString(b[:4])
+	af := func(name, value string) string {
+		return "--" + boundary + "\r\nContent-Disposition: form-data; name=\"" + name + "\"\r\n\r\n" + value
+	}
+	parts := []string{
+		af("$ACTION_REF_1", ""),
+		af("$ACTION_1:0", ref),
+		af("$ACTION_1:1", `["$undefined"]`),
+		af("$ACTION_KEY", key),
+		af("device_fingerprint", fp),
+		af("timezone", "Asia/Shanghai"),
+		af("next", ""),
+		af("email", email),
+		af("password", password),
+	}
+	return strings.Join(parts, "\r\n") + "\r\n--" + boundary + "--\r\n", boundary
+}
+
+func cookieHeader(h http.Header) string {
+	if h == nil {
+		return ""
 	}
 	var parts []string
-	for i := 0; i*cookieChunk < len(val); i++ {
-		end := (i + 1) * cookieChunk
-		if end > len(val) {
-			end = len(val)
+	for _, raw := range h.Values("Set-Cookie") {
+		pair := strings.TrimSpace(strings.SplitN(raw, ";", 2)[0])
+		if pair != "" {
+			parts = append(parts, pair)
 		}
-		parts = append(parts, fmt.Sprintf("sb-auth-auth-token.%d=%s", i, val[i*cookieChunk:end]))
 	}
 	return strings.Join(parts, "; ")
+}
+
+func mergeCookies(old, neu string) string {
+	m := map[string]string{}
+	var order []string
+	add := func(s string) {
+		for _, p := range strings.Split(s, ";") {
+			p = strings.TrimSpace(p)
+			if p == "" {
+				continue
+			}
+			k, _, _ := strings.Cut(p, "=")
+			if _, ok := m[k]; !ok {
+				order = append(order, k)
+			}
+			m[k] = p
+		}
+	}
+	add(old)
+	add(neu)
+	out := make([]string, 0, len(order))
+	for _, k := range order {
+		out = append(out, m[k])
+	}
+	return strings.Join(out, "; ")
+}
+
+func sessionCookiePresent(cookie string) bool {
+	return strings.Contains(cookie, "auth-token") || strings.Contains(cookie, "sb-access-token")
 }
 
 func persistSession(sa *storedAuth, fileName string) {

@@ -144,7 +144,7 @@ function render(d){
   box.innerHTML=`<div class="rounded-lg bg-stone-100 dark:bg-stone-800 p-3 min-w-0"><div class="text-[10px] text-stone-500">账号</div><div class="text-lg font-semibold tabular-nums">${acc.length}</div></div>
     <div class="rounded-lg bg-stone-100 dark:bg-stone-800 p-3 min-w-0"><div class="text-[10px] text-stone-500">冷却</div><div class="text-lg font-semibold tabular-nums">${acc.filter(a=>a.disabled).length}</div></div>
     <div class="rounded-lg bg-stone-100 dark:bg-stone-800 p-3 min-w-0"><div class="text-[10px] text-stone-500">有会话</div><div class="text-lg font-semibold tabular-nums">${acc.filter(a=>a.has_session).length}</div></div>`;
-  document.getElementById("meta").textContent=acc.length? "已存 cookie 自动拉额度 · 失败点「手动恢复」" : "";
+  document.getElementById("meta").textContent=acc.length? "先用已存 cookie；401 再点「手动恢复」" : "";
   const g=document.getElementById("grid");
   if(!acc.length){g.innerHTML='<div class="col-span-full text-center text-stone-500 py-10">还没有 key</div>';return}
   g.innerHTML=acc.map(cardHTML).join("");
